@@ -20,9 +20,11 @@ const tool = {
 
 // Initialize UI elements
 const elements = {
-    tool: document.getElementById('tool-container'),
+    uploadScreen: document.getElementById('upload-screen'),
+    toolInterface: document.getElementById('to'tool-interface'),
     fileInput: document.getElementById('excel-upload'),
     conversationDisplay: document.getElementById('conversation-display'),
+    conversationList: document.getElementById('conversation-list'),
     bucketArea: document.getElementById('bucket-area'),
     prevBtn: document.getElementById('prev-btn'),
     nextBtn: document.getElementById('next-btn'),
@@ -30,90 +32,149 @@ const elements = {
     downloadBtn: document.getElementById('download-btn'),
     progress: document.getElementById('progress'),
     progressText: document.getElementById('progress-text'),
-    statusMessage: document.getElementById('status-message')
+    statusMessage: document.getElementById('status-message'),
+    loadingSpinner: document.getElementById('loading-spinner'),
+    currentTitle: document.getElementById('current-conversation-title')
 };
 
 // Create bucket UI
-tool.buckets.forEach(bucket => {
-    const bucketHTML = `
-        <div class="bucket">
-            <label>
-                <input type="checkbox" name="${bucket}">
-                ${bucket}
-            </label>
-            <textarea placeholder="Comments for ${bucket}" name="${bucket}"></textarea>
-        </div>
-    `;
-    elements.bucketArea.insertAdjacentHTML('beforeend', bucketHTML);
-});
+function createBucketUI() {
+    tool.buckets.forEach(bucket => {
+        const bucketHTML = `
+            <div class="bucket">
+                <label class="bucket-label">
+                    <input type="checkbox" name="${bucket}">
+                    <span>${bucket}</span>
+                </label>
+                <textarea 
+                    placeholder="Add comments for ${bucket}" 
+                    name="${bucket}"
+                    rows="3"
+                ></textarea>
+            </div>
+        `;
+        elements.bucketArea.insertAdjacentHTML('beforeend', bucketHTML);
+    });
+}
 
 // File upload handler
-elements.fileInput.addEventListener('change', (event) => {
+elements.fileInput.addEventListener('change', async (event) => {
     const file = event.target.files[0];
     if (!file) return;
 
+    showLoading(true);
     showStatus('📂 Loading file...', 'info');
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-        try {
-            const data = new Uint8Array(e.target.result);
-            const workbook = XLSX.read(data, {type: 'array'});
-            const sheetName = workbook.SheetNames[0];
-            const sheet = workbook.Sheets[sheetName];
-            const rawData = XLSX.utils.sheet_to_json(sheet);
-            
-            // Group conversations by Id
-            const groupedData = {};
-            rawData.forEach(row => {
-                if (!groupedData[row.Id]) {
-                    groupedData[row.Id] = [];
-                }
-                groupedData[row.Id].push(row);
-            });
-            
-            tool.conversations = Object.values(groupedData);
-            tool.currentIndex = 0;
-            tool.annotations = {};
-            
-            elements.tool.style.display = 'block';
-            updateProgressBar();
-            displayConversation();
-            showStatus('✅ File loaded successfully!', 'success');
-        } catch (error) {
-            console.error('Error processing file:', error);
-            showStatus('❌ Error loading file. Please check the format.', 'error');
-        }
-    };
-
-    reader.readAsArrayBuffer(file);
+    try {
+        const data = await readExcelFile(file);
+        processExcelData(data);
+        elements.uploadScreen.style.display = 'none';
+        elements.toolInterface.style.display = 'flex';
+        showStatus('✅ File loaded successfully!', 'success');
+    } catch (error) {
+        console.error('Error:', error);
+        showStatus('❌ Error loading file', 'error');
+    } finally {
+        showLoading(false);
+    }
 });
+
+// Read Excel file
+async function readExcelFile(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, {type: 'array'});
+                const sheetName = workbook.SheetNames[0];
+                const sheet = workbook.Sheets[sheetName];
+                resolve(XLSX.utils.sheet_to_json(sheet));
+            } catch (error) {
+                reject(error);
+            }
+        };
+        reader.onerror = reject;
+        reader.readAsArrayBuffer(file);
+    });
+}
+
+// Process Excel data
+function processExcelData(rawData) {
+    const groupedData = {};
+    rawData.forEach(row => {
+        if (!groupedData[row.Id]) {
+            groupedData[row.Id] = [];
+        }
+        groupedData[row.Id].push(row);
+    });
+    
+    tool.conversations = Object.values(groupedData);
+    tool.currentIndex = 0;
+    tool.annotations = {};
+    
+    updateConversationList();
+    updateProgressBar();
+    displayConversation();
+}
+
+// Create conversation list items
+function updateConversationList() {
+    elements.conversationList.innerHTML = '';
+    tool.conversations.forEach((conv, index) => {
+        const item = document.createElement('div');
+        item.className = `conversation-item ${index === tool.currentIndex ? 'active' : ''}`;
+        item.innerHTML = `
+            <div>Conversation ${index + 1}</div>
+            <small>ID: ${conv[0].Id}</small>
+        `;
+        item.onclick = () => {
+            tool.currentIndex = index;
+            updateConversationList();
+            displayConversation();
+        };
+        elements.conversationList.appendChild(item);
+    });
+}
 
 // Display conversation
 function displayConversation() {
     const conv = tool.conversations[tool.currentIndex];
     const lastMessage = conv[conv.length - 1];
 
+    elements.currentTitle.textContent = `Conversation ${tool.currentIndex + 1} of ${tool.conversations.length}`;
+
     let html = `
-        <h3>Conversation ${tool.currentIndex + 1} of ${tool.conversations.length}</h3>
-        <div class="mb-3">
+        <div class="conversation-info">
             <strong>ID:</strong> ${conv[0].Id}<br>
             <strong>Customer Feedback:</strong> 
             <span class="badge ${lastMessage['Customer Feedback']?.toLowerCase() === 'negative' ? 'bg-danger' : 'bg-success'}">
                 ${lastMessage['Customer Feedback'] || 'N/A'}
             </span>
         </div>
+        <div class="messages">
     `;
 
     conv.forEach(message => {
         if (message.llmGeneratedUserMessage) {
-            html += `<div class="message customer">👤 Customer: ${message.llmGeneratedUserMessage}</div>`;
+            html += `
+                <div class="message customer">
+                    <div class="message-header">👤 Customer</div>
+                    ${message.llmGeneratedUserMessage}
+                </div>
+            `;
         }
         if (message.botMessage) {
-            html += `<div class="message bot">🤖 Bot: ${message.botMessage}</div>`;
+            html += `
+                <div class="message bot">
+                    <div class="message-header">🤖 Bot</div>
+                    ${message.botMessage}
+                </div>
+            `;
         }
     });
 
+    html += '</div>';
     elements.conversationDisplay.innerHTML = html;
     updateProgressBar();
     loadAnnotations();
@@ -124,7 +185,7 @@ function updateProgressBar() {
     const progress = ((tool.currentIndex + 1) / tool.conversations.length) * 100;
     elements.progress.style.width = `${progress}%`;
     elements.progressText.textContent = 
-        `Progress: ${tool.currentIndex + 1}/${tool.conversations.length}`;
+        `${tool.currentIndex + 1}/${tool.conversations.length} Conversations`;
 }
 
 // Save annotations
@@ -135,7 +196,7 @@ function saveCurrentAnnotations() {
     );
 
     if (!hasAnnotations) {
-        showStatus('⚠️ Please select at least one bucket before saving.', 'warning');
+        showStatus('⚠️ Please select at least one bucket', 'warning');
         return;
     }
 
@@ -150,6 +211,7 @@ function saveCurrentAnnotations() {
     });
 
     showStatus('✅ Annotations saved!', 'success');
+    updateConversationList();
 }
 
 // Load annotations
@@ -177,13 +239,17 @@ function loadAnnotations() {
 // Show status message
 function showStatus(message, type) {
     elements.statusMessage.textContent = message;
-    elements.statusMessage.className = 'alert';
-    elements.statusMessage.classList.add(`alert-${type}`);
+    elements.statusMessage.className = `status-message alert alert-${type}`;
     elements.statusMessage.style.display = 'block';
     
     setTimeout(() => {
         elements.statusMessage.style.display = 'none';
     }, 3000);
+}
+
+// Show/hide loading spinner
+function showLoading(show) {
+    elements.loadingSpinner.style.display = show ? 'flex' : 'none';
 }
 
 // Helper function for Excel binary conversion
@@ -200,10 +266,11 @@ function s2ab(s) {
 elements.downloadBtn.addEventListener('click', () => {
     try {
         if (Object.keys(tool.annotations).length === 0) {
-            showStatus('⚠️ No annotations found. Please annotate at least one conversation.', 'warning');
+            showStatus('⚠️ No annotations to download', 'warning');
             return;
         }
 
+        showLoading(true);
         showStatus('💾 Preparing download...', 'info');
         
         const annotatedData = [];
@@ -239,11 +306,6 @@ elements.downloadBtn.addEventListener('click', () => {
             }
         });
 
-        if (annotatedData.length === 0) {
-            showStatus('⚠️ No annotated conversations found.', 'warning');
-            return;
-        }
-
         const ws = XLSX.utils.json_to_sheet(annotatedData);
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, "Annotations");
@@ -263,10 +325,12 @@ elements.downloadBtn.addEventListener('click', () => {
         document.body.removeChild(a);
 
         const annotatedCount = new Set(annotatedData.map(row => row.Id)).size;
-        showStatus(`✅ Downloaded ${annotatedCount} annotated conversation(s)!`, 'success');
+        showStatus(`✅ Downloaded ${annotatedCount} conversation(s)!`, 'success');
     } catch (error) {
         console.error('Download error:', error);
-        showStatus('❌ Error downloading file. Check console for details.', 'error');
+        showStatus('❌ Error downloading file', 'error');
+    } finally {
+        showLoading(false);
     }
 });
 
@@ -274,19 +338,24 @@ elements.downloadBtn.addEventListener('click', () => {
 elements.prevBtn.addEventListener('click', () => {
     if (tool.currentIndex > 0) {
         tool.currentIndex--;
+        updateConversationList();
         displayConversation();
     } else {
-        showStatus('⚠️ This is the first conversation.', 'warning');
+        showStatus('⚠️ This is the first conversation', 'warning');
     }
 });
 
 elements.nextBtn.addEventListener('click', () => {
     if (tool.currentIndex < tool.conversations.length - 1) {
         tool.currentIndex++;
+        updateConversationList();
         displayConversation();
     } else {
-        showStatus('⚠️ This is the last conversation.', 'warning');
+        showStatus('⚠️ This is the last conversation', 'warning');
     }
 });
 
 elements.saveBtn.addEventListener('click', saveCurrentAnnotations);
+
+// Initialize buckets
+createBucketUI();
